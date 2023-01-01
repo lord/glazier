@@ -29,6 +29,7 @@ use crate::mouse::{Cursor, CursorDesc, MouseEvent};
 use crate::region::Region;
 use crate::scale::Scale;
 use crate::text::{Event, InputHandler};
+use crate::win_handler_wrapper::WinHandlerWrapper;
 
 use raw_window_handle::{
     HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
@@ -450,11 +451,15 @@ impl WindowBuilder {
         WindowBuilder(backend::WindowBuilder::new(app.backend_app))
     }
 
+    // TODO: docs
     /// Set the [`WinHandler`] for this window.
     ///
     /// This is the object that will receive callbacks from this window.
-    pub fn set_handler(&mut self, handler: Box<dyn WinHandler>) {
-        self.0.set_handler(handler)
+    pub fn set_handler<H: 'static + WinHandler, F: 'static + FnOnce(&WindowHandle) -> H>(
+        &mut self,
+        constructor: F,
+    ) {
+        self.0.set_handler(WinHandlerWrapper::create(constructor))
     }
 
     /// Set the window's initial drawing area size in [display points].
@@ -543,13 +548,6 @@ impl WindowBuilder {
 /// recursively; implementers are expected to use `RefCell` or the like,
 /// but should be careful to keep the lifetime of the borrow short.
 pub trait WinHandler {
-    /// Provide the handler with a handle to the window so that it can
-    /// invalidate or make other requests.
-    ///
-    /// This method passes the `WindowHandle` directly, because the handler may
-    /// wish to stash it.
-    fn connect(&mut self, handle: &WindowHandle);
-
     /// Called when the size of the window has changed.
     ///
     /// The `size` parameter is the new size in [display points](crate::Scale).

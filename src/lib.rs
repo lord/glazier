@@ -69,6 +69,7 @@ mod mouse;
 mod region;
 mod scale;
 mod screen;
+mod win_handler_wrapper;
 mod window;
 
 pub mod platform;

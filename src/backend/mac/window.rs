@@ -47,6 +47,7 @@ use raw_window_handle::{
 };
 
 use crate::kurbo::{Insets, Point, Rect, Size, Vec2};
+use crate::win_handler_wrapper::WinHandlerWrapper;
 
 use super::appkit::{
     NSRunLoopCommonModes, NSTrackingArea, NSTrackingAreaOptions, NSView as NSViewExt,
@@ -138,7 +139,7 @@ impl Default for WindowHandle {
 
 /// Builder abstraction for creating new windows.
 pub(crate) struct WindowBuilder {
-    handler: Option<Box<dyn WinHandler>>,
+    handler: Option<WinHandlerWrapper>,
     title: String,
     menu: Option<Menu>,
     size: Size,
@@ -178,7 +179,7 @@ enum IdleKind {
 /// This is the state associated with our custom NSView.
 struct ViewState {
     nsview: WeakPtr,
-    handler: Box<dyn WinHandler>,
+    handler: WinHandlerWrapper,
     idle_queue: Arc<Mutex<Vec<IdleKind>>>,
     /// Tracks window focusing left clicks
     focus_click: bool,
@@ -212,7 +213,7 @@ impl WindowBuilder {
         }
     }
 
-    pub fn set_handler(&mut self, handler: Box<dyn WinHandler>) {
+    pub fn set_handler(&mut self, handler: WinHandlerWrapper) {
         self.handler = Some(handler);
     }
 
@@ -345,9 +346,10 @@ impl WindowBuilder {
             let frame = NSView::frame(content_view);
 
             view_state.handler.connect(&handle.clone().into());
-            view_state.handler.scale(Scale::default());
+            view_state.handler.get_mut().scale(Scale::default());
             view_state
                 .handler
+                .get_mut()
                 .size(Size::new(frame.size.width, frame.size.height));
 
             Ok(handle)
@@ -598,13 +600,16 @@ pub(super) fn with_edit_lock_from_window<R>(
         &mut (*view_state)
     };
     let input_token = view_state.active_text_input?;
-    let handler = view_state.handler.acquire_input_lock(input_token, mutable);
+    let handler = view_state
+        .handler
+        .get_mut()
+        .acquire_input_lock(input_token, mutable);
     let r = f(handler);
-    view_state.handler.release_input_lock(input_token);
+    view_state.handler.get_mut().release_input_lock(input_token);
     Some(r)
 }
 
-fn make_view(handler: Box<dyn WinHandler>) -> (id, Weak<Mutex<Vec<IdleKind>>>) {
+fn make_view(handler: WinHandlerWrapper) -> (id, Weak<Mutex<Vec<IdleKind>>>) {
     let idle_queue = Arc::new(Mutex::new(Vec::new()));
     let queue_handle = Arc::downgrade(&idle_queue);
     unsafe {
@@ -655,7 +660,10 @@ extern "C" fn set_frame_size(this: &mut Object, _: Sel, size: NSSize) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
-        view_state.handler.size(Size::new(size.width, size.height));
+        view_state
+            .handler
+            .get_mut()
+            .size(Size::new(size.width, size.height));
         let superclass = msg_send![this, superclass];
         let () = msg_send![super(this, superclass), setFrameSize: size];
     }
@@ -741,7 +749,7 @@ fn mouse_down(this: &mut Object, nsevent: id, button: MouseButton) {
         let count = nsevent.clickCount() as u8;
         let focus = view_state.focus_click && button == MouseButton::Left;
         let event = mouse_event(nsevent, this as id, count, focus, button, Vec2::ZERO);
-        view_state.handler.mouse_down(&event);
+        view_state.handler.get_mut().mouse_down(&event);
     }
 }
 
@@ -772,14 +780,14 @@ fn mouse_up(this: &mut Object, nsevent: id, button: MouseButton) {
             false
         };
         let event = mouse_event(nsevent, this as id, 0, focus, button, Vec2::ZERO);
-        view_state.handler.mouse_up(&event);
+        view_state.handler.get_mut().mouse_up(&event);
         // If we have already received a mouseExited event then that means
         // we're still receiving mouse events because some buttons are being held down.
         // When the last held button is released and we haven't received a mouseEntered event,
         // then we will no longer receive mouse events until the next mouseEntered event
         // and need to inform the handler of the mouse leaving.
         if view_state.mouse_left && event.buttons.is_empty() {
-            view_state.handler.mouse_leave();
+            view_state.handler.get_mut().mouse_leave();
         }
     }
 }
@@ -789,7 +797,7 @@ extern "C" fn mouse_move(this: &mut Object, _: Sel, nsevent: id) {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
         let event = mouse_event(nsevent, this as id, 0, false, MouseButton::None, Vec2::ZERO);
-        view_state.handler.mouse_move(&event);
+        view_state.handler.get_mut().mouse_move(&event);
     }
 }
 
@@ -799,7 +807,7 @@ extern "C" fn mouse_enter(this: &mut Object, _sel: Sel, nsevent: id) {
         let view_state = &mut *(view_state as *mut ViewState);
         view_state.mouse_left = false;
         let event = mouse_event(nsevent, this, 0, false, MouseButton::None, Vec2::ZERO);
-        view_state.handler.mouse_move(&event);
+        view_state.handler.get_mut().mouse_move(&event);
     }
 }
 
@@ -808,7 +816,7 @@ extern "C" fn mouse_leave(this: &mut Object, _: Sel, _nsevent: id) {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
         view_state.mouse_left = true;
-        view_state.handler.mouse_leave();
+        view_state.handler.get_mut().mouse_leave();
     }
 }
 
@@ -834,7 +842,7 @@ extern "C" fn scroll_wheel(this: &mut Object, _: Sel, nsevent: id) {
             MouseButton::None,
             Vec2::new(dx, dy),
         );
-        view_state.handler.wheel(&event);
+        view_state.handler.get_mut().wheel(&event);
     }
 }
 
@@ -844,7 +852,7 @@ extern "C" fn pinch_event(this: &mut Object, _: Sel, nsevent: id) {
         let view_state = &mut *(view_state as *mut ViewState);
 
         let delta: CGFloat = msg_send![nsevent, magnification];
-        view_state.handler.zoom(delta);
+        view_state.handler.get_mut().zoom(delta);
     }
 }
 
@@ -854,7 +862,7 @@ extern "C" fn key_down(this: &mut Object, _: Sel, nsevent: id) {
         &mut *(view_state as *mut ViewState)
     };
     if let Some(event) = view_state.keyboard_state.process_native_event(nsevent) {
-        if !view_state.handler.key_down(event) {
+        if !view_state.handler.get_mut().key_down(event) {
             // key down not handled; forward to text input system
             unsafe {
                 let events = NSArray::arrayWithObjects(nil, &[nsevent]);
@@ -870,7 +878,7 @@ extern "C" fn key_up(this: &mut Object, _: Sel, nsevent: id) {
         &mut *(view_state as *mut ViewState)
     };
     if let Some(event) = view_state.keyboard_state.process_native_event(nsevent) {
-        view_state.handler.key_up(event);
+        view_state.handler.get_mut().key_up(event);
     }
 }
 
@@ -881,9 +889,9 @@ extern "C" fn mods_changed(this: &mut Object, _: Sel, nsevent: id) {
     };
     if let Some(event) = view_state.keyboard_state.process_native_event(nsevent) {
         if event.state == KeyState::Down {
-            view_state.handler.key_down(event);
+            view_state.handler.get_mut().key_down(event);
         } else {
-            view_state.handler.key_up(event);
+            view_state.handler.get_mut().key_up(event);
         }
     }
 }
@@ -892,7 +900,7 @@ extern "C" fn view_will_draw(this: &mut Object, _: Sel) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
-        view_state.handler.prepare_paint();
+        view_state.handler.get_mut().prepare_paint();
     }
 }
 
@@ -909,7 +917,7 @@ extern "C" fn draw_rect(this: &mut Object, _: Sel, dirtyRect: NSRect) {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
 
-        view_state.handler.paint(&invalid);
+        view_state.handler.get_mut().paint(&invalid);
 
         let superclass = msg_send![this, superclass];
         let () = msg_send![super(this, superclass), drawRect: dirtyRect];
@@ -965,9 +973,9 @@ extern "C" fn run_idle(this: &mut Object, _: Sel) {
     let queue: Vec<_> = mem::take(&mut view_state.idle_queue.lock().expect("queue"));
     for item in queue {
         match item {
-            IdleKind::Callback(it) => it.call(&mut *view_state.handler),
+            IdleKind::Callback(it) => it.call(&mut *view_state.handler.get_mut()),
             IdleKind::Token(it) => {
-                view_state.handler.as_mut().idle(it);
+                view_state.handler.get_mut().idle(it);
             }
             IdleKind::DeferredOp(op) => run_deferred(this, view_state, op),
         }
@@ -990,7 +998,10 @@ extern "C" fn handle_timer(this: &mut Object, _: Sel, timer: id) {
         msg_send![user_info, unsignedIntValue]
     };
 
-    view_state.handler.timer(TimerToken::from_raw(token));
+    view_state
+        .handler
+        .get_mut()
+        .timer(TimerToken::from_raw(token));
 }
 
 extern "C" fn handle_menu_item(this: &mut Object, _: Sel, item: id) {
@@ -998,7 +1009,7 @@ extern "C" fn handle_menu_item(this: &mut Object, _: Sel, item: id) {
         let tag: isize = msg_send![item, tag];
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
-        view_state.handler.command(tag as u32);
+        view_state.handler.get_mut().command(tag as u32);
     }
 }
 
@@ -1016,7 +1027,7 @@ extern "C" fn window_did_become_key(this: &mut Object, _: Sel, _notification: id
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
-        view_state.handler.got_focus();
+        view_state.handler.get_mut().got_focus();
     }
 }
 
@@ -1024,7 +1035,7 @@ extern "C" fn window_did_resign_key(this: &mut Object, _: Sel, _notification: id
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
-        view_state.handler.lost_focus();
+        view_state.handler.get_mut().lost_focus();
     }
 }
 
@@ -1032,7 +1043,7 @@ extern "C" fn window_should_close(this: &mut Object, _: Sel, _window: id) -> BOO
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
-        view_state.handler.request_close();
+        view_state.handler.get_mut().request_close();
         NO
     }
 }
@@ -1041,7 +1052,7 @@ extern "C" fn window_will_close(this: &mut Object, _: Sel, _notification: id) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
-        view_state.handler.destroy();
+        view_state.handler.get_mut().destroy();
     }
 }
 
@@ -1196,9 +1207,9 @@ impl WindowHandle {
                     Event::Reset | Event::SelectionChanged => {
                         let input_context: id = msg_send![*self.nsview.load(), inputContext];
                         let _: () = msg_send![input_context, discardMarkedText];
-                        let mut edit_lock = state.handler.acquire_input_lock(token, true);
+                        let mut edit_lock = state.handler.get_mut().acquire_input_lock(token, true);
                         edit_lock.set_composition_range(None);
-                        state.handler.release_input_lock(token);
+                        state.handler.get_mut().release_input_lock(token);
                     }
                 }
             }
@@ -1225,9 +1236,9 @@ impl WindowHandle {
                     let view_state: *mut c_void = *view.get_ivar("viewState");
                     let view_state = &mut *(view_state as *mut ViewState);
                     if ty == FileDialogType::Open {
-                        view_state.handler.open_file(token, url);
+                        view_state.handler.get_mut().open_file(token, url);
                     } else if ty == FileDialogType::Save {
-                        view_state.handler.save_as(token, url);
+                        view_state.handler.get_mut().save_as(token, url);
                     }
                 }
             });
@@ -1528,7 +1539,7 @@ impl ViewState {
             return adapter;
         }
         let view = view as *mut Object as *mut c_void;
-        let initial_state = self.handler.accesskit_tree();
+        let initial_state = self.handler.get_mut().accesskit_tree();
         let idle_handle = IdleHandle {
             nsview: self.nsview.clone(),
             idle_queue: Arc::downgrade(&self.idle_queue),

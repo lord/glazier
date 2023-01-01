@@ -25,7 +25,7 @@ fn main() {
     let mut window_builder = glazier::WindowBuilder::new(app.clone());
     window_builder.resizable(false);
     window_builder.set_size((WIDTH as f64 / 2., HEIGHT as f64 / 2.).into());
-    window_builder.set_handler(Box::new(WindowState::new()));
+    window_builder.set_handler(|window| WindowState::new(window));
     let window_handle = window_builder.build().unwrap();
     window_handle.show();
     app.run(None);
@@ -43,11 +43,11 @@ struct WindowState {
 }
 
 impl WindowState {
-    pub fn new() -> Self {
+    pub fn new(handle: &WindowHandle) -> Self {
         let render = pollster::block_on(RenderContext::new()).unwrap();
         let renderer = Renderer::new(&render.device).unwrap();
-        Self {
-            handle: Default::default(),
+        let this = Self {
+            handle: handle.clone(),
             surface: None,
             render,
             renderer,
@@ -55,7 +55,9 @@ impl WindowState {
             font_context: FontContext::new(),
             counter: 0,
             size: Size::new(800.0, 600.0),
-        }
+        };
+        this.schedule_render();
+        this
     }
 
     #[cfg(target_os = "macos")]
@@ -111,11 +113,6 @@ impl WindowState {
 }
 
 impl WinHandler for WindowState {
-    fn connect(&mut self, handle: &WindowHandle) {
-        self.handle = handle.clone();
-        self.schedule_render();
-    }
-
     fn prepare_paint(&mut self) {}
 
     fn paint(&mut self, _: &Region) {
