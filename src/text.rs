@@ -417,8 +417,8 @@ pub trait InputHandler {
     /// boundary.
     fn replace_range(&mut self, range: Range<usize>, text: &str);
 
-    // /// Given a `Point`, determine the corresponding text position.
-    // fn hit_test_point(&self, point: Point) -> HitTestPoint;
+    /// Given a `Point`, determine the corresponding text position.
+    fn hit_test_point(&self, point: crate::kurbo::Point) -> HitTestPoint;
 
     /// Returns the range, in UTF-8 code units, of the line (soft- or hard-wrapped)
     /// containing the byte specified by `index`.
@@ -870,4 +870,10 @@ pub enum Action {
     ///
     /// Triggered on most operating systems with escape.
     Cancel,
+}
+
+#[non_exhaustive]
+pub struct HitTestPoint {
+    pub idx: usize,
+    pub is_inside: bool,
 }
