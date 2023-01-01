@@ -21,6 +21,20 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
+use vello::peniko::*;
+use vello::*;
+
+use vello::{util::RenderContext, util::RenderSurface};
+
+use vello::{
+    glyph::{
+        pinot,
+        pinot::{FontRef, TableProvider},
+        GlyphContext,
+    },
+    kurbo::Affine,
+    peniko::Brush,
+};
 
 use unicode_segmentation::GraphemeCursor;
 
@@ -40,6 +54,7 @@ use glazier::kurbo::{Point, Rect};
 // const CARET_COLOR: Color = Color::rgb8(0x00, 0x82, 0xfc);
 // const FONT: FontFamily = FontFamily::SANS_SERIF;
 const FONT_SIZE: f64 = 16.0;
+const FONT_DATA: &[u8] = include_bytes!("./Roboto-Regular.ttf");
 
 #[derive(Default)]
 struct AppState {
@@ -47,6 +62,10 @@ struct AppState {
     handle: WindowHandle,
     document: Rc<RefCell<DocumentState>>,
     text_input_token: Option<TextFieldToken>,
+    scene: Scene,
+    surface: Option<RenderSurface>,
+    render_cx: Option<RenderContext>,
+    renderer: Option<Renderer>,
 }
 
 #[derive(Default)]
@@ -75,7 +94,14 @@ impl DocumentState {
 impl WinHandler for AppState {
     fn connect(&mut self, handle: &WindowHandle) {
         self.handle = handle.clone();
+        let size = handle.get_size();
+        let render_cx = pollster::block_on(RenderContext::new()).unwrap();
+        let renderer = Renderer::new(&render_cx.device).unwrap();
+        let surface = render_cx.create_surface(handle, size.width as u32, size.height as u32);
         let token = self.handle.add_text_field();
+        self.surface = Some(surface);
+        self.renderer = Some(renderer);
+        self.render_cx = Some(render_cx);
         self.handle.set_focused_text_field(Some(token));
         self.text_input_token = Some(token);
         let mut doc = self.document.borrow_mut();
@@ -88,6 +114,44 @@ impl WinHandler for AppState {
     }
 
     fn paint(&mut self, _: &Region) {
+        let width = self.surface.as_ref().unwrap().config.width;
+        let height = self.surface.as_ref().unwrap().config.height;
+        let mut builder = SceneBuilder::for_scene(&mut self.scene);
+        let rect = Rect::from_origin_size(Point::new(0.0, 0.0), (1000.0, 1000.0));
+        builder.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Brush::Solid(Color::rgb8(128, 128, 128)),
+            None,
+            &rect,
+        );
+        builder.finish();
+        let surface_texture = self
+            .surface
+            .as_ref()
+            .unwrap()
+            .surface
+            .get_current_texture()
+            .expect("failed to get surface texture");
+        self.renderer
+            .as_mut()
+            .unwrap()
+            .render_to_surface(
+                &self.render_cx.as_ref().unwrap().device,
+                &self.render_cx.as_ref().unwrap().queue,
+                &self.scene,
+                &surface_texture,
+                width,
+                height,
+            )
+            .expect("failed to render to surface");
+        surface_texture.present();
+        self.render_cx
+            .as_mut()
+            .unwrap()
+            .device
+            .poll(wgpu::Maintain::Wait);
+
         // let rect = self.size.to_rect();
         // piet.fill(rect, &BG_COLOR);
         // let doc = self.document.borrow();
